@@ -8,11 +8,6 @@ import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import json
-import csv
-import threading
-import schedule
-import time
 
 # Соединяемся с базой данных (создаем новую, если её нет)
 conn = sqlite3.connect('currency_history.db')
@@ -31,20 +26,12 @@ CREATE TABLE IF NOT EXISTS conversions (
 ''')
 conn.commit()
 
-# Начнем с перечня доступных валют и криптовалют
-ALL_CURRENCIES = [
-    "USD", "EUR", "RUB", "GBP", "AUD", "CAD", "CHF", "CNY", "DKK", "HKD", "INR", "KRW", "MXN", "NZD",
-    "PLN", "SEK", "TRY", "ZAR", "NOK", "ILS", "BRL", "THB", "MYR", "PHP",
-    "BTC", "ETH", "LTC", "DOGE", "USDT"
-]
-
 class Application(tk.Frame):
     def __init__(self, master=None):
         super().__init__(master)
         self.master = master
         self.pack(fill=tk.BOTH, expand=True)
         self.create_widgets()
-        self.schedule_update()
 
     def create_widgets(self):
         notebook = ttk.Notebook(self)
@@ -70,9 +57,15 @@ class Application(tk.Frame):
         label_amount = tk.Label(parent, text="Сумма:")
         entry_amount = tk.Entry(parent)
         label_source_currency = tk.Label(parent, text="Источник:")
-        combo_source_currency = ttk.Combobox(parent, values=ALL_CURRENCIES, state="readonly")
+        combo_source_currency = ttk.Combobox(parent, values=[
+            "USD", "EUR", "RUB", "GBP", "AUD", "CAD", "CHF", "CNY", "DKK", "HKD", "INR", "KRW", "MXN", "NZD",
+            "PLN", "SEK", "TRY", "ZAR", "NOK", "ILS", "BRL", "THB", "MYR", "PHP"
+        ], state="readonly")
         label_target_currency = tk.Label(parent, text="Получатель:")
-        combo_target_currency = ttk.Combobox(parent, values=ALL_CURRENCIES, state="readonly")
+        combo_target_currency = ttk.Combobox(parent, values=[
+            "USD", "EUR", "RUB", "GBP", "AUD", "CAD", "CHF", "CNY", "DKK", "HKD", "INR", "KRW", "MXN", "NZD",
+            "PLN", "SEK", "TRY", "ZAR", "NOK", "ILS", "BRL", "THB", "MYR", "PHP"
+        ], state="readonly")
         button_convert = tk.Button(parent, text="Конвертировать", command=lambda: self.convert(
             entry_amount.get(), combo_source_currency.get(), combo_target_currency.get()))
         label_result = tk.Label(parent, text="Результат: ")
@@ -89,20 +82,6 @@ class Application(tk.Frame):
 
     def create_history_frame(self, parent):
         # Интерфейс вкладки "История"
-        search_frame = ttk.Frame(parent)
-        search_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        # Поля для поиска
-        label_search = tk.Label(search_frame, text="Поиск по истории:")
-        entry_search = tk.Entry(search_frame)
-        button_search = tk.Button(search_frame, text="Искать", command=lambda: self.search_history(entry_search.get()))
-
-        # Расположение полей поиска
-        label_search.grid(row=0, column=0, sticky=tk.W)
-        entry_search.grid(row=0, column=1)
-        button_search.grid(row=0, column=2)
-
-        # Дерево для отображения истории
         treeview = ttk.Treeview(parent, columns=("Date", "Amount", "Source", "Target", "Result"), height=10)
         treeview.heading("#0", text="ID")
         treeview.column("#0", width=50)
@@ -131,7 +110,10 @@ class Application(tk.Frame):
 
         # Валюта для отслеживания курса
         label_currency = tk.Label(frame_input, text="Выберите валюту:")
-        combo_currency = ttk.Combobox(frame_input, values=ALL_CURRENCIES, state="readonly")
+        combo_currency = ttk.Combobox(frame_input, values=[
+            "USD", "EUR", "RUB", "GBP", "AUD", "CAD", "CHF", "CNY", "DKK", "HKD", "INR", "KRW", "MXN", "NZD",
+            "PLN", "SEK", "TRY", "ZAR", "NOK", "ILS", "BRL", "THB", "MYR", "PHP"
+        ], state="readonly")
         combo_currency.current(0)
 
         # Период дат
@@ -157,3 +139,86 @@ class Application(tk.Frame):
         start_date_entry.grid(row=1, column=1)
         label_end_date.grid(row=2, column=0, sticky=tk.W)
         end_date_entry.grid(row=2, column=1)
+        button_plot.grid(row=3, column=0, columnspan=2)
+
+        # Окно графика
+        self.fig = plt.Figure(figsize=(6, 4), dpi=100)
+        self.ax = self.fig.add_subplot(111)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    def plot_graph(self, target_currency, start_date, end_date):
+        # Очистка предыдущего графика
+        self.ax.clear()
+
+        # Получаем данные с API по актуальным курсам (будем запрашивать ежедневно за указанный период)
+        url = f"https://api.exchangerate-api.com/v4/timeseries/{start_date}/{end_date}?base=USD&symbols={target_currency}"
+        response = requests.get(url)
+        if response.status_code != 200:
+            showwarning("Ошибка", "Нет связи с API.")
+            return
+
+        # Парсим данные из API
+        data = response.json()
+        dates = sorted(data['rates'].keys())
+        rates = [data['rates'][date][target_currency] for date in dates]
+
+        # Преобразуем даты в нужный формат
+        formatted_dates = [datetime.datetime.strptime(date, "%Y-%m-%d") for date in dates]
+
+        # Рисуем график
+        self.ax.plot(formatted_dates, rates, marker='.', markersize=8, linestyle='-', color='b',
+                     label=f"Курс USD к {target_currency}")
+
+        # Оформляем график
+        self.ax.set_title(f"Динамика курса USD к {target_currency}\n({start_date} - {end_date})", fontsize=14)
+        self.ax.set_xlabel("Дата", fontsize=12)
+        self.ax.set_ylabel("Курс", fontsize=12)
+        self.ax.legend(loc='upper left')
+        self.ax.grid(True, alpha=0.3)
+
+        # Обновляем график
+        self.canvas.draw()
+
+    def convert(self, amount_str, source_currency, target_currency):
+        # Преобразование суммы и валют
+        try:
+            amount = float(amount_str.strip())  # Преобразуем строку в число
+            if amount <= 0:
+                raise ValueError("Сумма должна быть положительной.")
+
+            # Обращаемся к внешнему API для получения курса валют
+            url = f"https://api.exchangerate-api.com/v4/latest/{source_currency}"
+            response = requests.get(url)
+            if response.status_code != 200:
+                raise ConnectionError("Проблемы с подключением к API.")
+
+            data = response.json()
+            rate = data["rates"][target_currency]
+            result = amount * rate
+
+            # Дата и время конвертации
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Сохраняем результат в базу данных
+            cursor.execute("INSERT INTO conversions VALUES(NULL, ?, ?, ?, ?, ?)",
+                           (current_time, amount, source_currency, target_currency, result))
+            conn.commit()
+
+            # Выводим результат пользователю
+            showinfo("Результат", f"{amount} {source_currency} = {result:.2f} {target_currency}")
+
+        except ValueError as ve:
+            showwarning("Ошибка", f"Введены неправильные данные: {ve}.")
+        except KeyError:
+            showwarning("Ошибка", "Невозможно определить курс указанной валюты.")
+        except ConnectionError as ce:
+            showwarning("Ошибка", f"Соединение с API прервано: {ce}.")
+        except Exception as e:
+            showwarning("Ошибка", f"Возникла ошибка: {e}.")
+
+# Создание окна и старт приложения
+root = tk.Tk()
+app = Application(master=root)
+app.mainloop()
